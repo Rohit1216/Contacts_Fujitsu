@@ -1,0 +1,5 @@
+streamlit>=1.35
+python-pptx>=1.0.2
+openpyxl>=3.1
+Pillow>=10.0
+requests>=2.31
