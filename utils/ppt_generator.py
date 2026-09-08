@@ -1,5 +1,5 @@
 """
-Excel to Fujitsu PPT Convertor - core engine.
+LinkedIn Team Deck Generator - core engine.
 
 Reads an Excel workbook (one sheet per team, columns:
 Name | Phone | Email | Designation | Location | PhotoUrl | LinkedinUrl)
@@ -47,6 +47,13 @@ class DeckTheme:
     max_retries: int = 3
     placeholder_initials_bg: str = "8C1D6E"   # used when a photo can't be fetched
     rows_per_table_slide: Optional[int] = None  # None = auto-detect from template
+    # Cap on how many people fill a "grid-only" page - both the grid portion
+    # of the hero page and every hero-less continuation page. Defaults to 12.
+    # Set to None to fall back to however many grid card slots the template
+    # physically has. If the template has FEWER slots than this number, the
+    # template's own limit wins - there's no way to invent extra cards that
+    # don't exist on the template slide.
+    grid_people_per_page: Optional[int] = 12
 
 
 # --------------------------------------------------------------------------
@@ -481,9 +488,14 @@ def paginate_team_sheet(
 
     hero_slot, grid_slots = _split_hero_and_grid(slots)
     hero_capacity = 1 if hero_slot is not None else 0
-    grid_capacity = len(grid_slots)
-    if grid_capacity == 0:
+    detected_grid_capacity = len(grid_slots)
+    if detected_grid_capacity == 0:
         raise ValueError("No grid slots detected on template slide.")
+
+    if theme.grid_people_per_page is not None:
+        grid_capacity = min(theme.grid_people_per_page, detected_grid_capacity)
+    else:
+        grid_capacity = detected_grid_capacity
 
     people = people or []
     page1_capacity = hero_capacity + grid_capacity
