@@ -1,4 +1,4 @@
-# LinkedIn Team Deck Generator
+# Excel to Fujitsu Convertor 
 
 Fills a branded PowerPoint "team card" template (org-chart-style slides with
 circular photos + hyperlinked names + titles, plus an optional contact

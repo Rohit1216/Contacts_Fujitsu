@@ -1,5 +1,5 @@
 """
-LinkedIn Team Deck Generator - core engine.
+Excel to Fujitsu PPT Convertor - core engine.
 
 Reads an Excel workbook (one sheet per team, columns:
 Name | Phone | Email | Designation | Location | PhotoUrl | LinkedinUrl)
@@ -10,6 +10,12 @@ and fills a PowerPoint template that contains:
     has more people than the template has slots.
   - one or more "contact table" slides (S.No | Name | Title | Phone | Email),
     which also get auto-duplicated/paginated as rows run out.
+
+Pagination rule for team-grid sheets: the big top ("hero") card is only
+used on the FIRST page of a sheet (the sheet's top-level person). Every
+following page drops the hero card entirely and keeps filling the grid
+slots in order, so the flow of executives is continuous instead of
+re-promoting whoever is next in the list into the hero spot.
 
 This module has no Streamlit dependency - it's plain python-pptx / PIL /
 requests so it can be unit tested or reused from a CLI.
@@ -199,6 +205,40 @@ def find_person_slots(slide) -> list:
     return slots
 
 
+def _split_hero_and_grid(slots: list):
+    """
+    Distinguish the single wide "hero" card (the top-level-person spot at
+    the top of a team-grid slide) from the repeating grid cards, using
+    geometry only - no hardcoded shape names.
+
+    The hero is the lone slot sitting by itself in the topmost row (every
+    other row has multiple slots side by side). If no such row exists (e.g.
+    a template that is a pure grid with no hero card), every slot is
+    treated as a grid slot and there is no hero.
+
+    Returns (hero_slot_or_None, [grid_slots_in_reading_order]).
+    """
+    if not slots:
+        return None, []
+
+    def row_of(slot):
+        return round(slot.picture.top / 50000)
+
+    rows = {}
+    for slot in slots:
+        rows.setdefault(row_of(slot), []).append(slot)
+
+    top_row = min(rows)
+    top_row_slots = rows[top_row]
+
+    if len(top_row_slots) == 1 and len(rows) > 1:
+        hero = top_row_slots[0]
+        grid = [s for s in slots if s is not hero]
+        return hero, grid
+
+    return None, list(slots)
+
+
 # --------------------------------------------------------------------------
 # Low-level text / hyperlink / picture replacement helpers
 # --------------------------------------------------------------------------
@@ -362,16 +402,41 @@ def duplicate_slide(prs: Presentation, source_slide, insert_after_slide=None):
 
 
 def fill_team_page(
-    slide, people: list, theme: DeckTheme, photo_cache: dict, progress_cb=None
+    slide,
+    people: list,
+    theme: DeckTheme,
+    photo_cache: dict,
+    use_hero: bool = True,
+    progress_cb=None,
 ):
     """
     people: list of dicts with keys name, designation, photo_url, linkedin_url
-            length must be <= number of slots on the slide.
-    Any unused slots (when this is the last, partial page) are deleted.
-    progress_cb(done, total, message): optional callback for UI progress bars.
+            length must be <= number of slots that will actually be used
+            on this page (see use_hero below).
+
+    use_hero:
+      - True  -> this page's big top ("hero") card, if the template has
+        one, is filled with people[0] and the rest of `people` fill the
+        grid slots.
+      - False -> the hero card (if any) is deleted from this slide
+        entirely, and `people` fill the grid slots only, starting at the
+        first grid slot. This is what keeps continuation pages flowing
+        continuously instead of re-promoting the next person in the list
+        into the hero spot.
+
+    Any slot left over once `people` runs out (background + photo + text)
+    is removed, same as before.
     """
     slots = find_person_slots(slide)
-    for i, slot in enumerate(slots):
+    hero_slot, grid_slots = _split_hero_and_grid(slots)
+
+    if hero_slot is not None and not use_hero:
+        remove_slot(slide, hero_slot)
+        hero_slot = None
+
+    ordered_slots = ([hero_slot] if hero_slot is not None else []) + grid_slots
+
+    for i, slot in enumerate(ordered_slots):
         if i >= len(people):
             remove_slot(slide, slot)
             continue
@@ -397,16 +462,42 @@ def paginate_team_sheet(
     title_prefix: Optional[str] = None,
     progress_cb=None,
 ):
-    """Fill `template_slide` with the first chunk of `people`, then duplicate
-    it as many times as needed for the rest. Updates the "(x/y)" style title
-    if a title textbox is found and title_prefix is given."""
-    slot_count = len(find_person_slots(template_slide))
-    if slot_count == 0:
+    """
+    Fill `template_slide` for a sheet's people, auto-paginating as needed.
+
+    Page 1 uses the hero card (if the template has one) for people[0], plus
+    the grid slots for the next batch. Every page after that drops the
+    hero card and keeps filling the grid slots in order - so the sheet's
+    top-level person appears once, at the very top, and everyone after
+    them flows continuously through the grid without anyone being promoted
+    into the hero spot on later pages.
+
+    Also updates the "(x/y)" style title if a title textbox is found and
+    title_prefix is given.
+    """
+    slots = find_person_slots(template_slide)
+    if not slots:
         raise ValueError("No person slots detected on template slide.")
 
-    chunks = [
-        people[i : i + slot_count] for i in range(0, max(len(people), 1), slot_count)
-    ] or [[]]
+    hero_slot, grid_slots = _split_hero_and_grid(slots)
+    hero_capacity = 1 if hero_slot is not None else 0
+    grid_capacity = len(grid_slots)
+    if grid_capacity == 0:
+        raise ValueError("No grid slots detected on template slide.")
+
+    people = people or []
+    page1_capacity = hero_capacity + grid_capacity
+
+    if len(people) <= page1_capacity:
+        chunks = [people]
+    else:
+        first_chunk = people[:page1_capacity]
+        rest = people[page1_capacity:]
+        later_chunks = [
+            rest[i : i + grid_capacity] for i in range(0, len(rest), grid_capacity)
+        ]
+        chunks = [first_chunk] + later_chunks
+
     total_pages = len(chunks)
 
     pages = [template_slide]
@@ -417,7 +508,14 @@ def paginate_team_sheet(
         prev = new_slide
 
     for page_idx, (slide, chunk) in enumerate(zip(pages, chunks), start=1):
-        fill_team_page(slide, chunk, theme, photo_cache, progress_cb=progress_cb)
+        fill_team_page(
+            slide,
+            chunk,
+            theme,
+            photo_cache,
+            use_hero=(page_idx == 1 and hero_capacity > 0),
+            progress_cb=progress_cb,
+        )
         if title_prefix:
             _update_page_title(slide, title_prefix, page_idx, total_pages)
 

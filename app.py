@@ -1,5 +1,5 @@
 """
-LinkedIn Team Deck Generator - Streamlit UI
+Excel to Fujitsu PPT Convertor - Streamlit UI
 
 Upload a PowerPoint template (with one or more "team grid" slides and,
 optionally, a contact-table slide) plus an Excel workbook (one sheet per
